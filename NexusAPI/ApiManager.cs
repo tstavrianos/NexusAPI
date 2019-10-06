@@ -8,6 +8,8 @@ using NexusAPI.Responses;
 
 namespace NexusAPI
 {
+    using System.Threading;
+
     public static class ApiManager
     {
         private static INexusAPI _client;
@@ -95,6 +97,59 @@ namespace NexusAPI
             return DoGetMod(domain, modId, file);
         }
 
+        public static Mod GetModSync(string domain, int modId)
+        {
+            var file = Path.Combine(_cache, $"mod_{domain}_{modId}.json");
+            if (File.Exists(file))
+            {
+                var dt = File.GetCreationTimeUtc(file);
+                var diff = DateTime.UtcNow - dt;
+                var useIt = false;
+                if (diff.Hours < 24)
+                {
+                    useIt = true;
+                }
+                else
+                {
+                    if (RateLimits.IsBlocked())
+                    {
+                        var tillReset = RateLimits.GetTimeUntilRenewal();
+                        if (tillReset.TotalSeconds > 10)
+                        {
+                            useIt = true;
+                        }
+                    }
+                }
+
+                if (useIt)
+                {
+                    return JsonConvert.DeserializeObject<Mod>(File.ReadAllText(file));
+                }
+
+                File.Delete(file);
+            }
+
+            if (RateLimits.IsBlocked())
+            {
+                var renewDelay = RateLimits.GetTimeUntilRenewal();
+                if (renewDelay.TotalMilliseconds > 0)
+                    Thread.Sleep(renewDelay);
+            }
+
+            Mod mod;
+            try
+            {
+                mod = _throttle.Queue(() => _client.GetMod(domain, modId).Result).Result;
+            }
+            catch
+            {
+                return null;
+            }
+
+            File.WriteAllText(file, JsonConvert.SerializeObject(mod, Formatting.None));
+            return mod;
+        }
+
         private static async Task<Mod> DoGetMod(string domain, int modId, string file)
         {
             if (RateLimits.IsBlocked())
@@ -144,6 +199,59 @@ namespace NexusAPI
             File.Delete(file);
 
             return DoGetModFiles(domain, modId, file);
+        }
+
+        private static ModFile[] GetModFilesSync(string domain, int modId)
+        {
+            var file = Path.Combine(_cache, $"modfiles_{domain}_{modId}.json");
+            if (File.Exists(file))
+            {
+                var dt = File.GetCreationTimeUtc(file);
+                var diff = DateTime.UtcNow - dt;
+                var useIt = false;
+                if (diff.Hours < 12)
+                {
+                    useIt = true;
+                }
+                else
+                {
+                    if (RateLimits.IsBlocked())
+                    {
+                        var tillReset = RateLimits.GetTimeUntilRenewal();
+                        if (tillReset.TotalSeconds > 10)
+                        {
+                            useIt = true;
+                        }
+                    }
+                }
+
+                if (useIt)
+                {
+                    return JsonConvert.DeserializeObject<ModFile[]>(File.ReadAllText(file));
+                }
+                File.Delete(file);
+            }
+
+            if (RateLimits.IsBlocked())
+            {
+                var renewDelay = RateLimits.GetTimeUntilRenewal();
+                if (renewDelay.TotalMilliseconds > 0)
+                    Thread.Sleep(renewDelay);
+            }
+
+            ModFile[] modfiles;
+            try
+            {
+                modfiles = _throttle.Queue(() => _client.GetModFiles(domain, modId).Result.Files)
+                    .Result;
+            }
+            catch
+            {
+                return new ModFile[0];
+            }
+
+            File.WriteAllText(file, JsonConvert.SerializeObject(modfiles, Formatting.None));
+            return modfiles;
         }
 
         private static async Task<ModFile[]> DoGetModFiles(string domain, int modId, string file)
@@ -203,6 +311,12 @@ namespace NexusAPI
         {
             var files = GetModFiles(domain, modId).Result;
             return Task.FromResult(files.Where(x => categories.Contains(x.Category)).ToArray());
+        }
+
+        public static ModFile[] GetModFilesSync(string domain, int modId, params FileCategory[] categories)
+        {
+            var files = GetModFilesSync(domain, modId);
+            return files.Where(x => categories.Contains(x.Category)).ToArray();
         }
 
         public static void GetModFiles(string domain, int modId, IEnumerable<FileCategory> categories, Action<ModFile[]> doAfter)
